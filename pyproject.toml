@@ -1,0 +1,24 @@
+[project]
+name = "topo-opt-quadcopter"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Joshua Moore", email = "moorejd2@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "build123d>=0.13.0",
+    "gmsh>=4.15.2",
+    "manifold3d>=3.5.4",
+    "matplotlib>=3.11.2",
+    "meshio>=5.3.5",
+    "numpy>=2.5.3",
+    "pyvista>=0.49.0",
+]
+
+[project.scripts]
+topo-opt-quadcopter = "topo_opt_quadcopter:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"

@@ -1,0 +1,3 @@
+[submodule "external/beso"]
+	path = external/beso
+	url = https://github.com/calculix/beso.git

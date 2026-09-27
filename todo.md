@@ -63,9 +63,19 @@ build123d (named solids: design / keep-in / keep-out / fixed pads / load pads)
 Analytical references: δ = PL³/3EI; reaction under applied tip displacement = 3EIδ/L³;
 f₁ = (1.875²/2π)·√(EI/ρAL⁴).
 
-- [ ] **0. Toolchain**: apt `calculix-ccx`; `uv` project with build123d, gmsh, meshio,
+- [x] **0. Toolchain**: apt `calculix-ccx`; `uv` project with build123d, gmsh, meshio,
       pyvista, manifold3d, numpy, matplotlib; BESO as a git submodule.
-      Pass: BESO's bundled example runs headless.
+      Pass: BESO's bundled example runs headless. (`scripts/stage0_beso_example.py`)
+  - Done 2026-09-27. ccx 2.21 (apt); build123d 0.13, gmsh 4.15.2, Python 3.12, NumPy 2.
+  - `beso_runner.run_beso` copies the BESO sources into `<run_dir>/_beso/`, writes
+    `beso_conf.py` there, runs with `MPLBACKEND=Agg`. It patches one NumPy-2
+    incompatibility (`np.linalg.linalg.norm`) in the copy; the submodule is untouched.
+  - Example 1 (shell plate, 40% mass): about 60 iterations, about 80 s, clean truss.
+  - **BESO runs are not deterministic**: identical inputs gave 58, 59 and 63 iterations, and
+    one run froze at 79% mass after a one-off spike in the failure index at iteration 7.
+    Check the cause (ccx threads vs BESO's `cpu_cores` multiprocessing) in stage 4.
+  - The apt `ccx` links **SPOOLES only** (no PARDISO/PaStiX) against the reference `libblas`
+    → stage 3 should try OpenBLAS (`update-alternatives`) or a source build.
   - [ ] **Remote progress viewer**: a one-page three.js viewer served from the headless Linux
         box, for watching in-progress geometry from Windows and Android browsers over Tailscale
     - [ ] Serve the output folder with `python3 -m http.server 8000 --directory <out_dir>`
@@ -77,9 +87,17 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
         only when `Last-Modified` changes
       - Replace the mesh without resetting the camera, and show the file's timestamp on screen
       - Check that orbit and pinch-zoom work on Android
-- [ ] **1. Geometry → mesh → `.inp`**: build123d cantilever with named regions → STEP →
+- [x] **1. Geometry → mesh → `.inp`**: build123d cantilever with named regions → STEP →
       gmsh fragment → sets. Apply loads through `*COUPLING`/`*DISTRIBUTING` on a pad,
       not a single node. Pass: set counts and volumes match the CAD; solid-beam run completes.
+      (`scripts/stage1_cantilever_mesh.py`; modules `geometry`, `mesh`, `inp_writer`, `ccx`)
+  - Done 2026-09-27. Solid labels set the role by prefix: `keep_out` > `fixed` > `load` >
+    `keep_in` > `design`. Overlaps go to the higher priority; `keep_out` is removed.
+    Region volumes match the CAD booleans (exact for boxes; within 0.2% around a curved
+    hole, since C3D10 is straight-sided). BC faces are chosen by a box on a region's boundary.
+  - **ccx 2.21 does not output results for a `*DISTRIBUTING` reference node** (U and RF print
+    as 0), **and ignores `*BOUNDARY` on it**. Read displacements from the face node set;
+    prescribe displacements on the face nodes (see stage 2). Forces on it work.
   - [ ] Shared STL export helper for the viewer:
     - [ ] Make exports atomic: write `latest.stl.tmp`, then rename it to `latest.stl`, so the
           viewer never loads a half-written file
@@ -87,8 +105,24 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
           faster on the phone
   - Viewer done when: `http://<box>:8000/viewer.html` opens on both the PC and the phone, and
     a new export shows up within ~10 s without losing the current view
-- [ ] **2. Solver check (no optimization)**: tip force, applied tip displacement, and f₁
+- [x] **2. Solver check (no optimization)**: tip force, applied tip displacement, and f₁
       vs the analytical values; C3D4 vs C3D10; mesh convergence. Pass: within 5% with C3D10.
+      (`scripts/stage2_solver_check.py` → `runs/stage2/stage2_results.csv`)
+  - Done 2026-09-27. 200×10×20 mm PETG beam (E 2100, ν 0.38). Error vs Euler–Bernoulli:
+
+    | elem  | h mm | nodes | tip δ  | reaction | f₁ (y) | f₁ (z) | static s |
+    |-------|------|-------|--------|----------|--------|--------|----------|
+    | C3D10 | 10   | 1075  | −0.11% | +0.11%   | +0.75% | −0.20% | 0.1      |
+    | C3D10 | 2.5  | 22506 | +0.01% | −0.01%   | +0.58% | −0.28% | 3.6      |
+    | C3D10 | 1.5  | 85010 | +0.07% | −0.06%   | +0.53% | −0.32% | 35       |
+    | C3D4  | 2.5  | 3466  | −5.41% | +5.72%   | +11.4% | +2.61% | 0.4      |
+    | C3D4  | 1.0  | 34608 | −1.08% | +1.10%   | +2.72% | +0.28% | 7.4      |
+
+    C3D10 is within 1% even with one element through the width; C3D4 is stiff unless fine.
+  - Applied displacement: prescribe uz on all `LOAD` face nodes (the face can still rotate
+    about y, so it matches 3EIδ/L³). This constrains the face more than a real pad would.
+  - Stage 3 lead: user time ≈ wall time, so the apt SPOOLES solve is **single-threaded**
+    apart from matrix setup (85k nodes: 35 s static, 55 s modal).
 - [ ] **3. Scaling**: CalculiX time and memory vs element count, times ~30–60 BESO iterations.
       Check which linear solvers the CalculiX build has (SPOOLES slow; PARDISO/PaStiX faster).
       Pass: acceptable extrapolated run time for a quarter-model of the quad frame.
@@ -122,5 +156,6 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Start stages 0–2: set up the `uv` project, add the BESO submodule, and write the
-build123d → gmsh → `.inp` script.
+Stages 0–2 are done (except the remote viewer and the STL export helper). Next: stage 3
+(scaling; try OpenBLAS / a multithreaded solver), then stage 4. Check that BESO accepts the
+generated decks, including `*COUPLING`, element-face `*SURFACE` and the extra reference node.
