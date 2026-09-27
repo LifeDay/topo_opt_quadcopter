@@ -76,17 +76,21 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     Check the cause (ccx threads vs BESO's `cpu_cores` multiprocessing) in stage 4.
   - The apt `ccx` links **SPOOLES only** (no PARDISO/PaStiX) against the reference `libblas`
     → stage 3 should try OpenBLAS (`update-alternatives`) or a source build.
-  - [ ] **Remote progress viewer**: a one-page three.js viewer served from the headless Linux
+  - [x] **Remote progress viewer**: a one-page three.js viewer served from the headless Linux
         box, for watching in-progress geometry from Windows and Android browsers over Tailscale
-    - [ ] Serve the output folder with `python3 -m http.server 8000 --directory <out_dir>`
-      - Run it as a systemd user service so it survives reboots
-      - Optional: use `tailscale serve` to get HTTPS on the tailnet instead of a bare port
-    - [ ] Write `viewer.html` using three.js, STLLoader and OrbitControls, with the libraries
-          copied into the folder so it doesn't depend on a CDN
+        (`viewer/`, see `viewer/README.md`)
+    - [x] Serve the output folder with `python3 -m http.server 8000 --directory <out_dir>`
+      - Runs as the systemd user service `topo-viewer`, bound to the Tailscale IP
+        (100.101.26.104) only; lingering is on, so it starts at boot
+      - Optional, not done: use `tailscale serve` to get HTTPS on the tailnet instead of a bare port
+    - [x] Write `viewer.html` using three.js, STLLoader and OrbitControls, with the libraries
+          copied into the folder so it doesn't depend on a CDN (three 0.186.1 in `viewer/vendor/`)
       - Every ~5 s, send a HEAD request for `latest.stl` (use `cache: 'no-store'`) and reload
-        only when `Last-Modified` changes
+        only when `Last-Modified` changes (the key is Last-Modified + Content-Length, since
+        Last-Modified only has 1 s resolution)
       - Replace the mesh without resetting the camera, and show the file's timestamp on screen
-      - Check that orbit and pinch-zoom work on Android
+      - Check that orbit and pinch-zoom work on Android: passes in headless Chromium with
+        Pixel 7 emulation (CDP touch events), and on the real Pixel 6 (2026-09-27).
 - [x] **1. Geometry → mesh → `.inp`**: build123d cantilever with named regions → STEP →
       gmsh fragment → sets. Apply loads through `*COUPLING`/`*DISTRIBUTING` on a pad,
       not a single node. Pass: set counts and volumes match the CAD; solid-beam run completes.
@@ -98,13 +102,15 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
   - **ccx 2.21 does not output results for a `*DISTRIBUTING` reference node** (U and RF print
     as 0), **and ignores `*BOUNDARY` on it**. Read displacements from the face node set;
     prescribe displacements on the face nodes (see stage 2). Forces on it work.
-  - [ ] Shared STL export helper for the viewer:
-    - [ ] Make exports atomic: write `latest.stl.tmp`, then rename it to `latest.stl`, so the
+  - [x] Shared STL export helper for the viewer (`stl_export.py`; CLI with `python -m`):
+    - [x] Make exports atomic: write `latest.stl.tmp`, then rename it to `latest.stl`, so the
           viewer never loads a half-written file
-    - [ ] Export binary STL rather than ASCII; the files are several times smaller and load
+    - [x] Export binary STL rather than ASCII; the files are several times smaller and load
           faster on the phone
   - Viewer done when: `http://<box>:8000/viewer.html` opens on both the PC and the phone, and
     a new export shows up within ~10 s without losing the current view
+    → Done 2026-09-27: checked on the Windows laptop and the Pixel. In headless tests a new
+    export showed up after 4.6 s with the camera unchanged.
 - [x] **2. Solver check (no optimization)**: tip force, applied tip displacement, and f₁
       vs the analytical values; C3D4 vs C3D10; mesh convergence. Pass: within 5% with C3D10.
       (`scripts/stage2_solver_check.py` → `runs/stage2/stage2_results.csv`)
@@ -156,6 +162,6 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–2 are done (except the remote viewer and the STL export helper). Next: stage 3
+Stages 0–2 and the remote viewer are done. Next: stage 3
 (scaling; try OpenBLAS / a multithreaded solver), then stage 4. Check that BESO accepts the
 generated decks, including `*COUPLING`, element-face `*SURFACE` and the extra reference node.

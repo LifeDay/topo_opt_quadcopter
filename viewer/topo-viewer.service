@@ -1,0 +1,14 @@
+# Serves viewer/ (viewer.html + latest.stl) on the Tailscale IP only.
+# Install: see viewer/README.md
+[Unit]
+Description=Topology-optimization progress viewer (http :8000 on tailnet)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 8000 --bind 100.101.26.104 --directory %h/git/topo_opt_quadcopter/viewer
+# Binding fails until tailscaled has the address; keep retrying.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
