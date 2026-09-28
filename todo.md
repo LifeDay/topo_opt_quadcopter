@@ -42,9 +42,14 @@ the stop criteria below.
 ## Environment notes
 
 - Linux Mint 22.3 (Ubuntu 24.04 base), 16 cores, 31 GB RAM, GTX 1070 Ti (unused by CalculiX).
-- Nothing installed natively yet: no CalculiX, gmsh, build123d or ParaView.
-- FreeCAD 1.1.3 is installed as a Flatpak (bundles CalculiX, but sandboxed). A FreeCAD MCP is available.
-- Plan: CalculiX from apt (`calculix-ccx`), gmsh from pip, and a `uv` project on Python 3.12.
+- CPU is a Ryzen 7 2700X: **8 physical cores** (16 threads). PARDISO runs equally fast with 8 or 16 threads.
+- CalculiX: `scripts/build_ccx.sh` builds ccx 2.23 with MKL PARDISO + multithreaded SPOOLES into
+  `build/ccx/bin/ccx` (git-ignored, takes about 1 min; needs gfortran and the apt ARPACK runtime).
+  `ccx.find_ccx()` uses `$TOPO_CCX`, then that build, then the apt `ccx` (2.21, SPOOLES only).
+- FreeCAD 1.1.3 is installed as a Flatpak. Its bundled ccx 2.23 is SPOOLES-only too, and no faster
+  than apt. It runs from outside the sandbox with `flatpak run --cwd=… --command=ccx org.freecad.FreeCAD`,
+  but the sandbox has its own `/tmp`. A FreeCAD MCP is available.
+- gmsh from pip, and a `uv` project on Python 3.12.
 
 ## Pipeline
 
@@ -75,7 +80,7 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     one run froze at 79% mass after a one-off spike in the failure index at iteration 7.
     Check the cause (ccx threads vs BESO's `cpu_cores` multiprocessing) in stage 4.
   - The apt `ccx` links **SPOOLES only** (no PARDISO/PaStiX) against the reference `libblas`
-    → stage 3 should try OpenBLAS (`update-alternatives`) or a source build.
+    → resolved in stage 3 with a source build that uses PARDISO.
   - [x] **Remote progress viewer**: a one-page three.js viewer served from the headless Linux
         box, for watching in-progress geometry from Windows and Android browsers over Tailscale
         (`viewer/`, see `viewer/README.md`)
@@ -127,11 +132,39 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     C3D10 is within 1% even with one element through the width; C3D4 is stiff unless fine.
   - Applied displacement: prescribe uz on all `LOAD` face nodes (the face can still rotate
     about y, so it matches 3EIδ/L³). This constrains the face more than a real pad would.
-  - Stage 3 lead: user time ≈ wall time, so the apt SPOOLES solve is **single-threaded**
-    apart from matrix setup (85k nodes: 35 s static, 55 s modal).
-- [ ] **3. Scaling**: CalculiX time and memory vs element count, times ~30–60 BESO iterations.
+  - The times above are single-threaded: ccx uses 1 CPU unless `OMP_NUM_THREADS` /
+    `CCX_NPROC_EQUATION_SOLVER` is set (`run_ccx(threads=…)`). SPOOLES is multithreaded in the apt
+    build too (85k nodes: 35 → 19 s with 16 threads). With the PARDISO build and 1 thread,
+    the errors are identical and the 1.5 mm C3D10 case drops to 21 s static and 31 s modal.
+- [x] **3. Scaling**: CalculiX time and memory vs element count, times ~30–60 BESO iterations.
       Check which linear solvers the CalculiX build has (SPOOLES slow; PARDISO/PaStiX faster).
       Pass: acceptable extrapolated run time for a quarter-model of the quad frame.
+      (`scripts/stage3_scaling.py` → `runs/stage3/stage3_results_{pardiso,apt_spooles}.csv`;
+      `scripts/build_ccx.sh`)
+  - Done 2026-09-27. Proxy for the quarter-model: a solid 150×40×20 mm C3D10 block (one arm
+    plus a quarter of the hub), 16 threads. A stocky block fills in far more than the stage 2
+    beam: at 85k nodes the beam took 19 s and the block 36 s with SPOOLES.
+
+    | h mm | nodes | SPOOLES s / GB | PARDISO s / GB | PARDISO modal s / GB |
+    |------|-------|----------------|----------------|----------------------|
+    | 2.5  | 52k   | 11.7 / 2.3     | 5.7 / 1.3      | 9.3 / 1.4            |
+    | 2.0  | 97k   | 36 / 5.3       | 14 / 2.9       | 22 / 3.0             |
+    | 1.75 | 143k  | 74 / 8.7       | 28 / 4.8       | 41 / 5.0             |
+    | 1.5  | 223k  | 203 / 15.7     | 67 / 8.6       | 90 / 9.0             |
+    | 1.25 | 364k  | (≈32 GB, skipped) | 177 / 16.7  | 220 / 17.4           |
+
+    Time ∝ nodes^1.95 and memory ∝ nodes^1.34. Solver time for a BESO run of 50 iterations × 3
+    load steps: **h 2 mm ≈ 0.5 h, 1.5 mm ≈ 2.5 h (SPOOLES 8 h), 1.25 mm ≈ 7 h (overnight),
+    1 mm ≈ 27 h and ~41 GB (does not fit)**. Verdict: pass. Explore at 2 mm, finish at 1.5 or 1.25 mm.
+  - PARDISO is 3× faster and uses about 45% less memory than SPOOLES, with results identical to
+    7 digits. Factorization dominates (about 60 of 67 s at 223k nodes) and uses all 8 cores.
+    Overriding `mkl_serv_intel_cpu_true` (MKL's AMD dispatch) saves 13%.
+  - The iterative solvers (`SOLVER=ITERATIVE CHOLESKY/SCALING`) use 4.5× less memory but are
+    single-threaded and 5–8× slower than SPOOLES at 85k nodes. Not useful.
+  - Levers if runs are too slow: each load-case step refactors the same matrix; BESO still
+    solves the full mesh after elements are removed (1e-6 density); use a coarser mesh in the
+    non-design regions; a half or quarter model with symmetry (stage 8). BESO's own Python
+    time per iteration (filters, reading the .frd) is not measured here → measure it in stage 4.
 - [ ] **4. Single-load BESO**: `stiffness`, `mass_goal_ratio` ≈ 0.3, keep-out holes,
       keep-in bosses, filter radius, mesh sensitivity. Pass: converges; regions respected;
       sensible truss; topology holds when the mesh is refined.
@@ -162,6 +195,7 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–2 and the remote viewer are done. Next: stage 3
-(scaling; try OpenBLAS / a multithreaded solver), then stage 4. Check that BESO accepts the
-generated decks, including `*COUPLING`, element-face `*SURFACE` and the extra reference node.
+Stages 0–3 and the remote viewer are done. Next: stage 4 (single-load BESO on the
+cantilever, using the PARDISO build; at h ≈ 2–2.5 mm, runs take minutes). Check that BESO
+accepts the generated decks, including `*COUPLING`, element-face `*SURFACE` and the extra
+reference node, and measure BESO's own per-iteration overhead against the ccx time.

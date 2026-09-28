@@ -2,7 +2,6 @@
 
 import os
 import re
-import resource
 import shutil
 import subprocess
 import time
@@ -11,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+# Built by scripts/build_ccx.sh: ccx 2.23 with MKL PARDISO and multithreaded SPOOLES.
+LOCAL_CCX = Path(__file__).resolve().parents[2] / "build" / "ccx" / "bin" / "ccx"
 HEADER = re.compile(r"^\s*(.+?) \((.+?)\) for set (\S+) and time\s+(\S+)")
 
 
@@ -65,27 +66,39 @@ def read_dat(path: Path) -> DatResults:
     return res
 
 
+def find_ccx() -> str:
+    """$TOPO_CCX if set, else the local PARDISO build, else ccx on PATH (apt: SPOOLES only)."""
+    if os.environ.get("TOPO_CCX"):
+        return os.environ["TOPO_CCX"]
+    if LOCAL_CCX.exists():
+        return str(LOCAL_CCX)
+    ccx = shutil.which("ccx")
+    if ccx is None:
+        raise FileNotFoundError("CalculiX not found: run scripts/build_ccx.sh or apt install calculix-ccx")
+    return ccx
+
+
 def run_ccx(inp: Path, threads: int | None = None) -> CcxRun:
     """Run ccx on inp (in its folder). Returns wall time, peak memory and parsed .dat.
 
-    Peak memory is RUSAGE_CHILDREN's max RSS: the largest child of this process so far, so
-    it is only per-run accurate when runs go from small to large or run in fresh processes.
+    threads sets OMP_NUM_THREADS and CCX_NPROC_EQUATION_SOLVER; ccx uses one CPU when they
+    are unset. Peak memory is this run's max RSS (from wait4).
     """
     inp = Path(inp).resolve()
-    ccx = shutil.which("ccx")
-    if ccx is None:
-        raise FileNotFoundError("CalculiX 'ccx' not found on PATH")
+    ccx = find_ccx()
     env = dict(os.environ)
     if threads:
         env["OMP_NUM_THREADS"] = env["CCX_NPROC_EQUATION_SOLVER"] = str(threads)
     start = time.perf_counter()
     with open(inp.with_suffix(".ccx.log"), "w") as log:
-        proc = subprocess.run([ccx, "-i", inp.stem], cwd=inp.parent, env=env, stdout=log,
-                              stderr=subprocess.STDOUT)
+        proc = subprocess.Popen([ccx, "-i", inp.stem], cwd=inp.parent, env=env, stdout=log,
+                                stderr=subprocess.STDOUT)
+        _, status, usage = os.wait4(proc.pid, 0)
     wall = time.perf_counter() - start
-    rss_mb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+    returncode = os.waitstatus_to_exitcode(status)
+    rss_mb = usage.ru_maxrss / 1024
     log_text = inp.with_suffix(".ccx.log").read_text()
-    if proc.returncode != 0 or "*ERROR" in log_text:
+    if returncode != 0 or "*ERROR" in log_text:
         errors = [l for l in log_text.splitlines() if "ERROR" in l][:5]
-        raise RuntimeError(f"ccx failed on {inp.name}: {errors or proc.returncode}")
+        raise RuntimeError(f"ccx failed on {inp.name}: {errors or returncode}")
     return CcxRun(inp, wall, rss_mb, read_dat(inp.with_suffix(".dat")))

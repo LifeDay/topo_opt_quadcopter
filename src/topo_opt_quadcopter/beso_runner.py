@@ -11,18 +11,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .ccx import find_ccx
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BESO_DIR = REPO_ROOT / "external" / "beso"
 BESO_SOURCES = ["beso_main.py", "beso_lib.py", "beso_filters.py", "beso_plots.py", "beso_separate.py"]
 # BESO predates NumPy 2; these are applied to the private copy only.
 NUMPY2_PATCHES = [("np.linalg.linalg.norm", "np.linalg.norm")]
-
-
-def find_ccx() -> str:
-    ccx = shutil.which("ccx")
-    if ccx is None:
-        raise FileNotFoundError("CalculiX 'ccx' not found on PATH (sudo apt install calculix-ccx)")
-    return ccx
 
 
 def run_beso(run_dir: Path, inp_file: Path, conf_body: str, log_name: str = "beso_stdout.log") -> Path:
