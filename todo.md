@@ -76,9 +76,10 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     `beso_conf.py` there, runs with `MPLBACKEND=Agg`. It patches one NumPy-2
     incompatibility (`np.linalg.linalg.norm`) in the copy; the submodule is untouched.
   - Example 1 (shell plate, 40% mass): about 60 iterations, about 80 s, clean truss.
-  - **BESO runs are not deterministic**: identical inputs gave 58, 59 and 63 iterations, and
+  - **BESO runs are not deterministic** with the apt ccx: identical inputs gave 58, 59 and 63 iterations, and
     one run froze at 79% mass after a one-off spike in the failure index at iteration 7.
-    Check the cause (ccx threads vs BESO's `cpu_cores` multiprocessing) in stage 4.
+    → Stage 4: BESO's `cpu_cores` only sets `OMP_NUM_THREADS` (no multiprocessing), and with the
+    PARDISO build runs are identical at 1 and 8 threads.
   - The apt `ccx` links **SPOOLES only** (no PARDISO/PaStiX) against the reference `libblas`
     → resolved in stage 3 with a source build that uses PARDISO.
   - [x] **Remote progress viewer**: a one-page three.js viewer served from the headless Linux
@@ -165,14 +166,51 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     solves the full mesh after elements are removed (1e-6 density); use a coarser mesh in the
     non-design regions; a half or quarter model with symmetry (stage 8). BESO's own Python
     time per iteration (filters, reading the .frd) is not measured here → measure it in stage 4.
-- [ ] **4. Single-load BESO**: `stiffness`, `mass_goal_ratio` ≈ 0.3, keep-out holes,
+- [x] **4. Single-load BESO**: `stiffness`, `mass_goal_ratio` ≈ 0.3, keep-out holes,
       keep-in bosses, filter radius, mesh sensitivity. Pass: converges; regions respected;
       sensible truss; topology holds when the mesh is refined.
-  - [ ] Confirm the run writes intermediate snapshots. If it only exports at the end, add a
-        periodic export step, or there's nothing to see mid-run. Note: with
-        `save_iteration_results = 1`, BESO writes `.inp`/`.vtk` result meshes each iteration,
-        not STL, so something must convert the newest one to `latest.stl` (surface of the
-        solid elements, via the atomic export helper).
+      (`scripts/stage4_single_load.py` → `runs/stage4/stage4_results.csv`;
+      `scripts/stage4_compare.py` → `stage4_iou.csv`, `stage4_designs.png`)
+  - Done 2026-09-27. 120×20×60 mm PETG block, clamped at x = 0, −100 N in z through a coupling on
+    the tip face, a Ø10 keep-out hole and a Ø20 keep-in boss at mid-span, 30% mass, `simple` filter.
+    BESO accepts the generated decks (`*COUPLING`/`*DISTRIBUTING`, element-face `*SURFACE`,
+    the extra reference node) without changes.
+
+    | case       | h mm | filter mm | iter | tip u / solid | IoU vs base | ccx s/it | BESO s/it |
+    |------------|------|-----------|------|---------------|-------------|----------|-----------|
+    | h2.5_r6    | 2.5  | 6         | 78   | 2.81          | 1           | 8.2      | 2.4       |
+    | h3.0_r6    | 3.0  | 6         | 76   | 3.00          | 0.49        | 4.0      | 1.5       |
+    | h2.0_r6    | 2.0  | 6         | 79   | 2.86          | 0.53        | 20.3     | 4.9       |
+    | h2.5_rauto | 2.5  | auto=6.6  | 80   | 3.01          | 0.74        | 8.2      | 2.5       |
+    | h2.5_r10   | 2.5  | 10        | 84   | 3.61          | 0.37        | 8.2      | 3.2       |
+
+    All cases: mass 0.300, pads and boss solid, no elements in the hole, one connected piece;
+    members run the full 20 mm width (a 2D-like truss: chords, a V from the root, diagonals via the boss).
+  - **Topology vs mesh: two families, not a drift.** 3 mm and 2 mm agree (IoU 0.74); 2.5 mm and
+    `auto` agree (IoU 0.74); across the families IoU ≈ 0.5. The 2.5 mm family has more web
+    members and is the stiffer one. With the filter radius fixed in mm, BESO's hard 0/1 switching
+    lands in one of two nearby local optima, and their stiffness differs by < 7%. The filter radius
+    matters more: 10 mm gives fewer members and 29% more tip displacement. → For real parts, run 2–3
+    mesh/filter variants (cheap) and keep the stiffest; don't read the details of one run as "the" optimum.
+    IoU is harsh on thin members (a 6 mm member moved 2 mm loses half its overlap), so read it with the render.
+  - **Repeatable with PARDISO**: the base case run twice at 8 threads and once at 1 thread gives
+    identical logs and final states. The stage 0 run-to-run differences were with the apt SPOOLES
+    build, so SPOOLES's threading is the likely cause. 1 thread is 2.8× slower (23 vs 8.2 s per solve).
+  - **BESO's `simple` filter was as slow as ccx**: ~8 s per iteration at 36k design elements (pure-Python
+    pair loops), plus 12 s setup. `beso_fast_filter.py` (cKDTree + sparse matrix) replaces
+    `prepare2s`/`run2` in the private copy (`run_beso(fast_filter=True)`, the default): same pairs and
+    weights, filtered sensitivities equal to 3e-15, and an identical final design (0 of 42k elements
+    differ). Base run 21 → 14 min. Remaining BESO time (~2.4 s/it at 64k nodes, 4.9 at 117k) is mostly
+    writing the per-iteration `.vtk` and reading the `.dat`. The other filters (morphology, casting)
+    are still the slow originals → check them in stage 8.
+  - `run_beso` calls ccx through `_beso/ccx_timed.sh` (sets threads, default 8; logs each solve's wall
+    time to `ccx_times.log`) and returns a `BesoRun` with the wall and ccx times. `domains_conf()` writes
+    the per-domain config blocks (void state = 1e-6 × E and density; optional von Mises FI).
+  - [x] Intermediate snapshots: with `save_iteration_results = 1` BESO writes `fileNNN.vtk` each
+        iteration. `run_beso(live_stl=…)` exports the newest settled one (not written for 2 s) to
+        `viewer/latest.stl` while BESO runs (`stage4_single_load.py --live`).
+  - For stage 5: BESO's `.dat` reader starts a new load case when the printed time changes (a `TODO`
+    in `import_FI_int_pt`). Check that several `*STATIC` steps are read as separate cases.
 - [ ] **5. Several loads**: steps for Fy, Fz and torsion, individually and combined; scale one ×5.
       Pass: the combined result handles all loads; sensitivity to load magnitudes understood.
 - [ ] **6. Applied displacement + stress**: non-zero `*BOUNDARY` step; `failure_index` with
@@ -195,7 +233,7 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–3 and the remote viewer are done. Next: stage 4 (single-load BESO on the
-cantilever, using the PARDISO build; at h ≈ 2–2.5 mm, runs take minutes). Check that BESO
-accepts the generated decks, including `*COUPLING`, element-face `*SURFACE` and the extra
-reference node, and measure BESO's own per-iteration overhead against the ccx time.
+Stages 0–4 and the remote viewer are done. Next: stage 5 (several load cases on the stage 4
+cantilever: Fy, Fz and torsion as separate `*STATIC` steps). First check that BESO reads each
+step as its own case (see the stage 4 note on `import_FI_int_pt`), then compare the combined
+result with the single-load ones and scale one load ×5.

@@ -1559,6 +1559,7 @@ dependencies = [
     { name = "meshio" },
     { name = "numpy" },
     { name = "pyvista" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
@@ -1570,6 +1571,7 @@ requires-dist = [
     { name = "meshio", specifier = ">=5.3.5" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pyvista", specifier = ">=0.49.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 
 [[package]]
