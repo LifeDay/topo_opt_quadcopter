@@ -211,8 +211,47 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
         `viewer/latest.stl` while BESO runs (`stage4_single_load.py --live`).
   - For stage 5: BESO's `.dat` reader starts a new load case when the printed time changes (a `TODO`
     in `import_FI_int_pt`). Check that several `*STATIC` steps are read as separate cases.
-- [ ] **5. Several loads**: steps for Fy, Fz and torsion, individually and combined; scale one ×5.
+- [x] **5. Several loads**: steps for Fy, Fz and torsion, individually and combined; scale one ×5.
       Pass: the combined result handles all loads; sensitivity to load magnitudes understood.
+      (`scripts/stage5_multi_load.py` → `runs/stage5/stage5_results.csv`, `stage5_designs.png`)
+  - Done 2026-09-28. Stage 4 block (h 2.5, filter 6 mm, 30% mass). Loads on the tip coupling,
+    **balanced** so each gives the solid block the same compliance: Fz −100 N, Fy −36.5 N, Mx 2.71 N·m
+    (at 100 N each, the weak-axis Fy would put 8× more energy in than Fz). Each final design is
+    re-solved under each load alone (void at 1e-6 E); compliance ÷ that of the design optimized for that load alone:
+
+    | design  | steps | iter | Fz   | Fy   | Mx    | worst | ccx s/it |
+    |---------|-------|------|------|------|-------|-------|----------|
+    | fz      | 1     | 78   | 1    | 2.97 | 5.91  | 5.91  | 8.2      |
+    | fy      | 1     | 76   | 4.44 | 1    | 10.56 | 10.56 | 8.2      |
+    | mx      | 1     | 73   | 1.49 | 2.22 | 1     | 2.22  | 8.2      |
+    | env     | 3     | 86   | 1.11 | 1.25 | 1.13  | 1.25  | 22.2     |
+    | env_fy5 | 3     | 73   | 3.64 | 0.95 | 4.67  | 4.67  | 22.2     |
+    | simul   | 1     | 81   | 2.41 | 3.01 | 5.16  | 5.16  | 8.2      |
+
+    All cases: mass 0.300, pads and boss solid, hole empty, one piece.
+  - **The envelope works**: it costs 11–25% per load compared with each single-load design, which are
+    2–10× worse on the loads they weren't optimized for. `fz` is the stage 4 truss (identical to the stage 4
+    base: 0 of 42k elements differ); `fy` puts material on the ±y faces; `mx` and `env` become a closed
+    section (outer skin, hollow inside).
+  - **Magnitudes matter**: Fy ×5 (25× in energy) turns the envelope back into essentially the Fy-only design.
+    Balance loads by their solid-block compliance, then weight them on purpose. `env_fy5` at 0.95 on Fy
+    (it beats the Fy-only design) is the local-optimum scatter from stage 4.
+  - **Separate steps, not one step with all loads**: `simul` optimizes for one combined load direction
+    and is poor for every load taken alone.
+  - Cost: 3 steps = 2.7× the ccx time per iteration (each step refactors the matrix); BESO's own time
+    goes up only 2.4 → 3.3 s/it.
+  - Checked: BESO starts a new case when the time printed in the `.dat` changes, and ccx prints the
+    total time (1, 2, 3…), so each `*STATIC` step is its own case.
+  - **ccx carries `*CLOAD`/`*BOUNDARY` over from one step to the next** → `static_step` now writes `OP=NEW` for both
+    (the stage 2 numbers are unchanged).
+  - **Torsion**: a moment on the coupling reference node works in ccx 2.23 with `*DISTRIBUTING` dofs `1,6` and
+    `*CLOAD` on dof 4 (twist matches a hand estimate of J for the rectangle). `model_data(dofs="1,6")`.
+  - **BESO's `steps_superposition` is broken for `stiffness`**: it adds energy densities linearly (they are
+    quadratic), adds them 6× in a leftover loop, and keeps one integration point. Use real steps only.
+  - BESO crashed in its final plotting call (`replot`) when a run stopped on OSCILLATION → patched in the
+    private copy (`SOURCE_PATCHES` in `beso_runner.py`).
+  - BESO's `.vtk` cells follow the element order in the `.inp`; `stage5_multi_load.solid_element_ids` maps them
+    back by the mean of each element's nodes (float32 points).
 - [ ] **6. Applied displacement + stress**: non-zero `*BOUNDARY` step; `failure_index` with
       the PETG/PLA allowable stress divided by a safety factor. Pass: failure index ≤ 1;
       compare with the stiffness-objective run.
@@ -233,7 +272,7 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–4 and the remote viewer are done. Next: stage 5 (several load cases on the stage 4
-cantilever: Fy, Fz and torsion as separate `*STATIC` steps). First check that BESO reads each
-step as its own case (see the stage 4 note on `import_FI_int_pt`), then compare the combined
-result with the single-load ones and scale one load ×5.
+Stages 0–5 and the remote viewer are done. Next: stage 6 (applied non-zero displacement +
+`failure_index` with a von Mises allowable; `domains_conf` already takes `fi=`). Prescribe the
+displacement on the `LOAD` face nodes (ccx ignores `*BOUNDARY` on a `*DISTRIBUTING` reference node,
+seen in 2.21; recheck in 2.23), and compare with the stiffness-objective run.

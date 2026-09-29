@@ -23,8 +23,12 @@ from .inp_writer import Material
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BESO_DIR = REPO_ROOT / "external" / "beso"
 BESO_SOURCES = ["beso_main.py", "beso_lib.py", "beso_filters.py", "beso_plots.py", "beso_separate.py"]
-# BESO predates NumPy 2; these are applied to the private copy only.
-NUMPY2_PATCHES = [("np.linalg.linalg.norm", "np.linalg.norm")]
+# Applied to the private copy only: BESO predates NumPy 2, and its displacement plot uses the
+# wrong length when a run stops on oscillation (i_plot = i - 1), which crashes at the very end.
+SOURCE_PATCHES = [
+    ("np.linalg.linalg.norm", "np.linalg.norm"),
+    ("plt.plot(range(i + 1), disp_max_cn,", "plt.plot(range(i_plot + 1), disp_max_cn,"),
+]
 FAST_FILTER = Path(__file__).with_name("beso_fast_filter.py")
 
 CCX_WRAPPER = """#!/bin/bash
@@ -103,7 +107,7 @@ def run_beso(run_dir: Path, inp_file: Path, conf_body: str, log_name: str = "bes
     beso_copy.mkdir(parents=True)
     for name in BESO_SOURCES:
         source = (BESO_DIR / name).read_text()
-        for old, new in NUMPY2_PATCHES:
+        for old, new in SOURCE_PATCHES:
             source = source.replace(old, new)
         if name == "beso_filters.py" and fast_filter:
             source += "\n\n" + FAST_FILTER.read_text()

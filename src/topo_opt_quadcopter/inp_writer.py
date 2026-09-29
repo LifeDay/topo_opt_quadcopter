@@ -25,6 +25,11 @@ class Material:
 PETG = Material("PETG", E=2100.0, nu=0.38, density=1.27e-9)
 
 
+def void_material(material: Material, ratio: float = 1e-6) -> Material:
+    """BESO's removed-element state: ratio × E and density."""
+    return Material(f"{material.name}_VOID", material.E * ratio, material.nu, material.density * ratio)
+
+
 def _rows(values, per_line: int = 16) -> str:
     values = list(values)
     return "\n".join(", ".join(str(v) for v in values[i:i + per_line]) + ","
@@ -37,9 +42,12 @@ def ref_node_ids(mesh: FEMesh, couplings: list[str]) -> dict[str, int]:
     return {name: first + i for i, name in enumerate(couplings)}
 
 
-def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str = "1,3") -> str:
+def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str = "1,3",
+               elset_materials: dict[str, Material] | None = None) -> str:
     """Everything before the first *STEP. couplings lists surface names that get a reference
-    node REF_<name> at the surface's area centroid.
+    node REF_<name> at the surface's area centroid. dofs: "1,3" for forces only, "1,6" to
+    also take moments (*CLOAD on dofs 4-6 of the reference node; works in ccx 2.23).
+    elset_materials overrides the material of some element sets.
 
     ccx does not report results for a *DISTRIBUTING reference node (U prints as zero), so
     read displacements from the surface's node set instead.
@@ -62,10 +70,11 @@ def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str
         out.append(f"*SURFACE, NAME=S_{name}, TYPE=ELEMENT")
         out += [f"{e}, S{f}" for e, f in faces]
 
-    out += [f"*MATERIAL, NAME={material.name}", "*ELASTIC", f"{material.E:g}, {material.nu:g}",
-            "*DENSITY", f"{material.density:g}"]
-    for elset in mesh.elsets:
-        out += [f"*SOLID SECTION, ELSET={elset}, MATERIAL={material.name}"]
+    by_elset = {elset: (elset_materials or {}).get(elset, material) for elset in mesh.elsets}
+    for m in {m.name: m for m in by_elset.values()}.values():
+        out += [f"*MATERIAL, NAME={m.name}", "*ELASTIC", f"{m.E:g}, {m.nu:g}", "*DENSITY", f"{m.density:g}"]
+    for elset, m in by_elset.items():
+        out += [f"*SOLID SECTION, ELSET={elset}, MATERIAL={m.name}"]
 
     for name, ref in refs.items():
         out += [f"*COUPLING, REF NODE={ref}, SURFACE=S_{name}, CONSTRAINT NAME=C_{name}",
@@ -76,13 +85,15 @@ def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str
 def static_step(fixed: list[str], loads: list[tuple[str, int, float]] = (),
                 displacements: list[tuple[str, int, float]] = (), print_nsets: list[str] = ()) -> str:
     """Linear static step. fixed: node sets clamped in 1-3. loads / displacements:
-    (node set, dof, value) as *CLOAD / *BOUNDARY. print_nsets: sets whose U and RF go to .dat."""
-    out = ["*STEP", "*STATIC", "*BOUNDARY"]
+    (node set, dof, value) as *CLOAD / *BOUNDARY. print_nsets: sets whose U and RF go to .dat.
+
+    OP=NEW drops the previous step's boundaries and loads; ccx carries them over otherwise,
+    so each step of a multi-step deck is its own load case.
+    """
+    out = ["*STEP", "*STATIC", "*BOUNDARY, OP=NEW"]
     out += [f"{n}, 1, 3" for n in fixed]
-    if displacements:
-        out += ["*BOUNDARY"] + [f"{n}, {d}, {d}, {v:g}" for n, d, v in displacements]
-    if loads:
-        out += ["*CLOAD"] + [f"{n}, {d}, {v:g}" for n, d, v in loads]
+    out += [f"{n}, {d}, {d}, {v:g}" for n, d, v in displacements]
+    out += ["*CLOAD, OP=NEW"] + [f"{n}, {d}, {v:g}" for n, d, v in loads]
     out += ["*NODE FILE", "U", "*EL FILE", "S"]
     for n in print_nsets:
         out += [f"*NODE PRINT, NSET={n}", "U, RF"]
