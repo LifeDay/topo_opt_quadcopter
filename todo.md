@@ -252,9 +252,48 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     private copy (`SOURCE_PATCHES` in `beso_runner.py`).
   - BESO's `.vtk` cells follow the element order in the `.inp`; `stage5_multi_load.solid_element_ids` maps them
     back by the mean of each element's nodes (float32 points).
-- [ ] **6. Applied displacement + stress**: non-zero `*BOUNDARY` step; `failure_index` with
+- [x] **6. Applied displacement + stress**: non-zero `*BOUNDARY` step; `failure_index` with
       the PETG/PLA allowable stress divided by a safety factor. Pass: failure index ≤ 1;
       compare with the stiffness-objective run.
+      (`scripts/stage6_displacement_stress.py` → `runs/stage6/stage6_results.csv`)
+  - Done 2026-09-28. Stage 4 block (h 2.5, filter 6 mm, mass goal 0.3). PETG 50 MPa yield / SF 2 = **25 MPa**
+    von Mises allowable on the design domain and the boss. Loads sized on the solid block: tip displacement
+    **1.9 mm** in −z on the `LOAD` face nodes (peak 20 MPa = 80% of allowable, reaction 2105 N) and tip force
+    **658 N** on the coupling (peak 6.25 MPa = 25%). Each final design re-solved under both loads (void 1e-6 E);
+    peak = max von Mises over integration points in design + boss:
+
+    | case           | objective      | limit | mass  | iter | own peak / allow | disp: peak MPa, RF N | force: peak MPa, tip u mm |
+    |----------------|----------------|-------|-------|------|------------------|----------------------|---------------------------|
+    | solid          |                |       | 1     |      |                  | 20.0, 2105           | 6.2, 0.60                 |
+    | disp_stiff     | stiffness      | no    | 0.30  | 71   | 0.81             | 20.2, 812            | 62.5, 3.29                |
+    | disp_fi        | failure_index  | yes   | 0.66  | 37   | 1.01 (1 elem)    | 25.3, 1642           | 13.7, 0.81                |
+    | force_stiff    | stiffness      | no    | 0.30  | 78   | 0.72             | 22.0, 808            | 17.9, 1.58                |
+    | force_fi       | failure_index  | yes   | 0.38  | 70   | 0.69             | 25.8, 994            | 17.1, 1.29                |
+    | force_stiff_fi | stiffness      | yes   | 0.43  | 65   | 0.47             | 20.7, 1167           | 11.7, 1.10                |
+
+    All cases: pads and boss solid, hole empty, one piece; stress-limited designs ≤ 1 element over (BESO's tolerance).
+  - **Under applied displacement, the stiffness objective did not raise the stress**: `disp_stiff` peaks at
+    20.2 MPa at 30% mass, the same as the solid block, and the reaction drops 61%. The worry above (stiffer part →
+    higher stress under a fixed displacement) doesn't show up here; the stiffness optimum spreads the strain evenly.
+    Still check the stress of the final design; it is not guaranteed.
+  - **BESO's stress limit freezes the mass on transient spikes**: when more elements than at the start have FI ≥ 1
+    (+ `FI_violated_tolerance`), the mass is held and the add/remove ratios decay, so the mass never comes back
+    down. The spikes last one iteration (hard 0/1 switching briefly leaves thin or dangling members):
+    `force_stiff_fi` had 7 elements over at iteration 38 and none at 39, then stayed at 43% mass with a final peak of
+    47% of the allowable. `force_fi` froze at 38% after a one-iteration spike to FI 1.97. Both force designs at 30%
+    without a limit are within the allowable anyway (0.72).
+  - **`failure_index` as the objective is worse than `stiffness` under displacement**: it removes the lowest-stress
+    elements (a fully-stressed-design heuristic) and makes hot spots; `disp_fi` hit the limit at 66% mass, while
+    `disp_stiff` is at 81% of the allowable at 30%.
+  - → For real parts: optimize for stiffness (envelope of the load cases) with no stress limit in BESO, then check
+    the stress of the final design (and a few saved iterations) outside BESO; if it fails, raise the mass goal.
+    A stress limit that doesn't trip on spikes (a higher `FI_violated_tolerance`, or a patch that requires
+    violations for several iterations in a row) is untested.
+  - ccx 2.23 still ignores `*BOUNDARY` on a `*DISTRIBUTING` reference node (U, RF and stresses all zero).
+  - BESO needs a failure criterion on **every** domain once any has one (`import_FI_int_pt` raises KeyError for
+    elements without one, and the main loop takes `max()` of an empty list) → pads get `fi=1e9` MPa.
+  - `static_step(print_elsets=…)` writes integration-point stresses to the `.dat` (BESO replaces these requests
+    with its own).
 - [ ] **7. Modal check**: `*FREQUENCY` on each saved iteration → plot f₁ vs mass → choose
       the final iteration (avoid motor/prop frequency bands).
 - [ ] **8. Symmetry and printability**: half-model with symmetry boundary conditions vs the
@@ -272,7 +311,7 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–5 and the remote viewer are done. Next: stage 6 (applied non-zero displacement +
-`failure_index` with a von Mises allowable; `domains_conf` already takes `fi=`). Prescribe the
-displacement on the `LOAD` face nodes (ccx ignores `*BOUNDARY` on a `*DISTRIBUTING` reference node,
-seen in 2.21; recheck in 2.23), and compare with the stiffness-objective run.
+Stages 0–6 and the remote viewer are done. Next: stage 7 (modal check: `*FREQUENCY` on each saved
+iteration, f₁ vs mass). BESO saves `fileNNN.vtk` per iteration; map states back with
+`stage5_multi_load.solid_element_ids` and re-solve with void elements at 1e-6 E, as in stages 5–6. Add a
+von Mises check on the same saved iterations, as stage 6 recommends.

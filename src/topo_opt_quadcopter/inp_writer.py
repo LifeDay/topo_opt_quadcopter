@@ -83,9 +83,11 @@ def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str
 
 
 def static_step(fixed: list[str], loads: list[tuple[str, int, float]] = (),
-                displacements: list[tuple[str, int, float]] = (), print_nsets: list[str] = ()) -> str:
+                displacements: list[tuple[str, int, float]] = (), print_nsets: list[str] = (),
+                print_elsets: list[str] = ()) -> str:
     """Linear static step. fixed: node sets clamped in 1-3. loads / displacements:
     (node set, dof, value) as *CLOAD / *BOUNDARY. print_nsets: sets whose U and RF go to .dat.
+    print_elsets: element sets whose integration-point stresses go to .dat.
 
     OP=NEW drops the previous step's boundaries and loads; ccx carries them over otherwise,
     so each step of a multi-step deck is its own load case.
@@ -97,6 +99,8 @@ def static_step(fixed: list[str], loads: list[tuple[str, int, float]] = (),
     out += ["*NODE FILE", "U", "*EL FILE", "S"]
     for n in print_nsets:
         out += [f"*NODE PRINT, NSET={n}", "U, RF"]
+    for e in print_elsets:
+        out += [f"*EL PRINT, ELSET={e}", "S"]
     for n in fixed:
         out += [f"*NODE PRINT, NSET={n}, TOTALS=ONLY", "RF"]
     out.append("*END STEP")
