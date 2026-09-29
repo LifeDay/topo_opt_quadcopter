@@ -19,6 +19,8 @@ from .geometry import REGION_PRIORITY, region_role
 GMSH_TYPES = {"C3D4": (4, [0, 1, 2, 3]), "C3D10": (11, [0, 1, 2, 3, 4, 5, 6, 7, 9, 8])}
 # CalculiX faces of a tet, as 0-based corner indices: S1 = 1-2-3, S2 = 1-4-2, S3 = 2-4-3, S4 = 3-4-1.
 TET_FACES = [(0, 1, 2), (0, 3, 1), (1, 3, 2), (2, 3, 0)]
+# Mid-edge nodes (0-based, CalculiX C3D10 order) of each face, in the same order.
+TET10_FACE_MIDS = [(4, 5, 6), (7, 8, 4), (8, 9, 5), (9, 7, 6)]
 
 
 @dataclass
@@ -64,6 +66,35 @@ class FEMesh:
     def surface_centroid(self, name: str) -> np.ndarray:
         areas, centroids = self.surface_faces(name)
         return (areas[:, None] * centroids).sum(axis=0) / areas.sum()
+
+    def surface_node_weights(self, name: str) -> tuple[np.ndarray, np.ndarray]:
+        """(node ids, weights summing to 1): each node's share of a uniform load on the
+        surface. A 6-node triangle puts it all on the mid-edge nodes (A/3 each); a 3-node
+        triangle on the corners."""
+        areas, _ = self.surface_faces(name)
+        nodes, shares = [], []
+        for (e, f), area in zip(self.surfaces[name], areas):
+            conn = self.connectivity[e]
+            local = TET10_FACE_MIDS[f - 1] if len(conn) == 10 else TET_FACES[f - 1]
+            nodes += [conn[k] for k in local]
+            shares += [area / 3] * 3
+        ids, inverse = np.unique(nodes, return_inverse=True)
+        weights = np.bincount(inverse, weights=shares)
+        return ids, weights / weights.sum()
+
+    def subset(self, elem_ids) -> "FEMesh":
+        """The mesh with only elem_ids: element sets, node sets and surfaces are trimmed to
+        them, and nodes no kept element uses are dropped."""
+        keep = np.asarray(elem_ids)
+        elsets = {n: ids[np.isin(ids, keep)] for n, ids in self.elsets.items()}
+        elsets = {n: ids for n, ids in elsets.items() if len(ids)}
+        connectivity = {int(e): self.connectivity[int(e)] for ids in elsets.values() for e in ids}
+        used = np.unique(np.concatenate(list(connectivity.values())))
+        in_used = np.isin(self.node_ids, used)
+        return FEMesh(self.elem_type, self.node_ids[in_used], self.coords[in_used], elsets, connectivity,
+                      {n: ids[np.isin(ids, used)] for n, ids in self.nsets.items()},
+                      {n: [(e, f) for e, f in faces if e in connectivity] for n, faces in self.surfaces.items()},
+                      self.cad_volumes)
 
     def element_volumes(self, elset: str) -> np.ndarray:
         """Volumes from the corner nodes (exact for straight-sided tets)."""

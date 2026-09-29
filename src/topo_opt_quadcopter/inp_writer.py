@@ -43,11 +43,14 @@ def ref_node_ids(mesh: FEMesh, couplings: list[str]) -> dict[str, int]:
 
 
 def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str = "1,3",
-               elset_materials: dict[str, Material] | None = None) -> str:
+               elset_materials: dict[str, Material] | None = None,
+               point_masses: dict[str, float] | None = None) -> str:
     """Everything before the first *STEP. couplings lists surface names that get a reference
     node REF_<name> at the surface's area centroid. dofs: "1,3" for forces only, "1,6" to
     also take moments (*CLOAD on dofs 4-6 of the reference node; works in ccx 2.23).
-    elset_materials overrides the material of some element sets.
+    elset_materials overrides the material of some element sets. point_masses spreads a
+    translational mass (t) over a surface's nodes by their share of its area, e.g. a motor
+    on the load pad: ccx 2.23 ignores a *MASS element on a *DISTRIBUTING reference node.
 
     ccx does not report results for a *DISTRIBUTING reference node (U prints as zero), so
     read displacements from the surface's node set instead.
@@ -63,6 +66,12 @@ def model_data(mesh: FEMesh, material: Material, couplings: list[str], dofs: str
     for elset, ids in mesh.elsets.items():
         out.append(f"*ELEMENT, TYPE={mesh.elem_type}, ELSET={elset}")
         out += [f"{e}, " + ", ".join(str(int(n)) for n in mesh.connectivity[e]) for e in ids.tolist()]
+    elem = max(mesh.connectivity) + 1
+    for name, mass in (point_masses or {}).items():
+        for node, w in zip(*mesh.surface_node_weights(name)):
+            out += [f"*ELEMENT, TYPE=MASS, ELSET=M_{name}_{elem}", f"{elem}, {node}",
+                    f"*MASS, ELSET=M_{name}_{elem}", f"{mass * w:.9g}"]
+            elem += 1
 
     for name, nodes in mesh.nsets.items():
         out += [f"*NSET, NSET={name}", _rows(nodes.tolist())]
@@ -107,10 +116,15 @@ def static_step(fixed: list[str], loads: list[tuple[str, int, float]] = (),
     return "\n".join(out) + "\n"
 
 
-def frequency_step(fixed: list[str], n_modes: int = 6) -> str:
-    out = ["*STEP", "*FREQUENCY", str(n_modes), "*BOUNDARY"]
+def frequency_step(fixed: list[str], n_modes: int = 6, print_nsets: list[str] = ()) -> str:
+    """Eigenmodes with the fixed sets clamped. print_nsets: sets whose mode shapes (U,
+    one block per mode) go to .dat."""
+    out = ["*STEP", "*FREQUENCY", str(n_modes), "*BOUNDARY, OP=NEW"]
     out += [f"{n}, 1, 3" for n in fixed]
-    out += ["*NODE FILE", "U", "*END STEP"]
+    out += ["*NODE FILE", "U"]
+    for n in print_nsets:
+        out += [f"*NODE PRINT, NSET={n}", "U"]
+    out.append("*END STEP")
     return "\n".join(out) + "\n"
 
 
