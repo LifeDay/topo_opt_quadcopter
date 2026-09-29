@@ -5,7 +5,10 @@ frequency (1P) from idle to full throttle, and the blade pass (3P) over the same
   1P  IDLE_RPM/60 = 67 Hz  to  KV × 4.2 V × 4 / 60 = 980 Hz  (no-load RPM at full charge,
                                                               an upper bound)
   3P  200 Hz to 2940 Hz
-so no mode may lie in 67–2940 Hz. Idle is Betaflight dynamic idle for a 3" (about 4000 rpm).
+Idle is Betaflight dynamic idle for a 3" (about 4000 rpm). Clearing that whole band is not
+possible (the solid block's f₁ is 261 Hz), so the band is only reported. The rule instead keeps
+f₁ ≥ F_MIN_HZ, high enough that the flight controller's gyro lowpass filters can sit below it
+and remove the frame mode without adding too much lag to the control loop.
 
 The motor + prop (MOTOR_MASS) sits on the load pad, spread over the LOAD face nodes by their
 share of its area (ccx 2.23 ignores a *MASS on the *DISTRIBUTING reference node). check_tip_mass
@@ -24,8 +27,8 @@ von Mises check against the stage 6 allowable (25 MPa) on the design domain and 
   force_stiff  stage 6: 658 N tip force (same design as the stage 4 base)
   disp_stiff   stage 6: 1.9 mm tip displacement
 
-Choice: the lightest iteration with no computed mode in the band and FI ≤ 1. Pass: tip-mass
-check within 2%, every iteration evaluated.
+Choice: the lightest iteration with f₁ ≥ F_MIN_HZ and FI ≤ 1. Pass: tip-mass
+check within 2%, every iteration evaluated, and a choice for every source.
 
     uv run python scripts/stage7_modal.py [source ...] [--every N] [--report-only]
 """
@@ -61,6 +64,7 @@ RPM_MAX = KV * CELLS * V_CELL
 BAND_1P = (IDLE_RPM / 60, RPM_MAX / 60)
 BAND_3P = (BLADES * BAND_1P[0], BLADES * BAND_1P[1])
 BAND = (BAND_1P[0], BAND_3P[1])
+F_MIN_HZ = 100.0  # lowest allowed f₁ (with the motor); a starting point, to be tuned
 MOTOR_MASS = 10.5e-6  # t: 9 g motor + 1.5 g prop
 N_MODES = 6
 LIMITED = ["design", "keep_in_boss"]
@@ -247,7 +251,7 @@ def compare_final(name: str, mesh: FEMesh) -> dict:
 
 
 def choose(rows: list[dict]) -> dict | None:
-    ok = [r for r in rows if r["in_band"] == "False" and float(r["fi_max"]) <= 1]
+    ok = [r for r in rows if float(r["f1"]) >= F_MIN_HZ and float(r["fi_max"]) <= 1]
     return min(ok, key=lambda r: float(r["mass_g"])) if ok else None
 
 
@@ -259,6 +263,9 @@ def plot(results: dict[str, list[dict]]) -> None:
             ax.plot(m, [float(r[f"f{k + 1}"]) for r in rows], marker=".", ms=3, lw=1, label=f"f{k + 1}")
         ax.axhspan(*BAND_1P, color="tab:red", alpha=0.12, label="1P (rotor)")
         ax.axhspan(*BAND_3P, color="tab:orange", alpha=0.12, label="3P (blade pass)")
+        ax.axhline(F_MIN_HZ, color="tab:red", ls=":", lw=1.5, label=f"f₁ min {F_MIN_HZ:g} Hz")
+        if (pick := choose(rows)):
+            ax.plot(float(pick["design_ratio"]), float(pick["f1"]), "k*", ms=12, label=f"choice (it {pick['iteration']})")
         ax.set(xlabel="design-domain mass ratio (BESO)", ylabel="frequency (Hz)", title=name, yscale="log")
         ax.invert_xaxis()
         fi = ax.twinx()
@@ -284,14 +291,14 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
 
     print(f"band: 1P {BAND_1P[0]:.0f}–{BAND_1P[1]:.0f} Hz, 3P {BAND_3P[0]:.0f}–{BAND_3P[1]:.0f} Hz "
-          f"→ avoid {BAND[0]:.0f}–{BAND[1]:.0f} Hz; motor + prop {MOTOR_MASS * 1e6:g} g", flush=True)
+          f"(reported only); rule f₁ ≥ {F_MIN_HZ:g} Hz; motor + prop {MOTOR_MASS * 1e6:g} g", flush=True)
     tip = check_tip_mass()
     print(f"tip-mass check: {tip}", flush=True)
     ok = all(abs(v["error"]) <= TIP_MASS_TOL for v in tip.values())
 
     mesh = build_mesh(2.5, OUT)
     vols = element_volumes(mesh)
-    results, summary = {}, {"band_hz": BAND, "band_1p_hz": BAND_1P, "band_3p_hz": BAND_3P,
+    results, summary = {}, {"f1_min_hz": F_MIN_HZ, "band_hz": BAND, "band_1p_hz": BAND_1P, "band_3p_hz": BAND_3P,
                             "motor_mass_g": MOTOR_MASS * 1e6, "tip_mass_check": tip}
     for name in names:
         start = time.perf_counter()
@@ -304,11 +311,12 @@ def main() -> int:
         ok &= args.every == 1 and len(results[name]) == n_vtk
         final = compare_final(name, mesh)
         pick = choose(results[name])
+        ok &= pick is not None
         summary[name] = {"iterations": n_vtk, "evaluated": len(results[name]), "final": final,
                          "first": {k: results[name][0][k] for k in ("design_ratio", "mass_g", "f1", "f2", "f3")},
                          "last": {k: results[name][-1][k] for k in ("design_ratio", "mass_g", "f1", "f2", "f3", "fi_max")},
                          "any_outside_band": any(r["in_band"] == "False" for r in results[name]),
-                         "choice": pick and {k: pick[k] for k in ("iteration", "design_ratio", "mass_g", "f1", "fi_max")},
+                         "choice": pick and {k: pick[k] for k in ("iteration", "design_ratio", "mass_g", "f1", "f2", "fi_max")},
                          "scan_s": round(time.perf_counter() - start, 1)}
         print(f"[{name}] {json.dumps(summary[name])}", flush=True)
     (OUT / "stage7_summary.json").write_text(json.dumps(summary, indent=1))

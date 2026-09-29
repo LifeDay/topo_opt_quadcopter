@@ -299,8 +299,8 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
       (`scripts/stage7_modal.py` → `runs/stage7/<source>/iterations.csv`, `stage7_summary.json`, `stage7_modal.png`)
   - Done 2026-09-29. Baseline quad: 3" 3-blade props, 3500 KV on 4S; motor 9 g + prop 1.5 g on the load pad.
     Band: 1P from idle (~4000 rpm, 67 Hz) to 3500 × 16.8 V = 58,800 rpm (980 Hz, no-load upper bound);
-    3P blade pass 200–2940 Hz → **no mode in 67–2940 Hz**. Rule: the lightest iteration with no mode in the band and
-    FI ≤ 1. Every saved iteration of three existing runs re-solved (first 6 modes + von Mises under the run's own loads,
+    3P blade pass 200–2940 Hz. First rule: the lightest iteration with no mode in 67–2940 Hz and FI ≤ 1 (replaced,
+    see below). Every saved iteration of three existing runs re-solved (first 6 modes + von Mises under the run's own loads,
     stage 6 allowable 25 MPa); 235 solves, ~75 min.
 
     | source      | f₁ solid → 30% mass | f₂, f₃ at 30%    | motor's effect on f₁ at 30% | FI at 30% | iterations with FI > 1 |
@@ -309,10 +309,22 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     | force_stiff | 261 → 160 Hz (y)    | 427 (tw), 612 (z)| 214 → 160 Hz                | 0.72      | 8, up to 2.06          |
     | disp_stiff  | 261 → 128 Hz (y)    | 296 (tw), 517 (x)| 175 → 128 Hz                | 0.81      | 9, up to 1.43          |
 
-  - **No iteration of any run is outside the band, so the rule chooses none.** The solid block's own f₁ (261 Hz) is
-    inside it; clearing it needs f₁ > 2.9 kHz. With a full-throttle 1P–3P band this is likely true of a real 3" arm
-    too → the rule needs to change before stage 9 (e.g. keep f₁ above 1P at full throttle, 980 Hz, or only avoid a
-    band around hover rpm). The pipeline (scan, plot, choice) is ready for whatever rule is chosen.
+  - **No iteration of any run is outside the band.** The solid block's own f₁ (261 Hz) is inside it; clearing it
+    needs f₁ > 2.9 kHz, which a real 3" arm won't reach either.
+  - **Rule changed (2026-09-29): f₁ ≥ 100 Hz (with the motor) and FI ≤ 1, lightest wins** (`F_MIN_HZ`). The idea is to
+    keep the frame mode high enough that the flight controller's gyro lowpass filters can sit below it and remove it
+    without adding too much lag; 100 Hz is a starting point to tune. The 1P/3P band is still plotted and reported.
+    Choices (all at the 30% mass goal; the scan used `--report-only`, no new solves):
+
+    | source      | iteration | mass g | f₁ Hz | f₂ Hz | FI    |
+    |-------------|-----------|--------|-------|-------|-------|
+    | env         | 66        | 69.0   | 229   | 558   | 0.31  |
+    | force_stiff | 61        | 69.1   | 163   | 429   | 0.79  |
+    | disp_stiff  | 60        | 69.1   | 131   | 292   | 0.81  |
+
+    At 100 Hz the rule doesn't bind on this block: every iteration has f₁ ≥ 128 Hz, so the choice is simply the
+    lightest iteration within the stress limit (an earlier iteration at the mass goal, not always the last one).
+    It will bind on a longer, thinner real arm, or if the minimum goes up. `disp_stiff` has the least margin (1.3×).
   - **The envelope design keeps its frequency**: f₁ drops only 12% at 62% less mass (its closed section keeps the
     bending and torsion stiffness), and even rises to 284 Hz at 55% mass. The single-load designs lose 39–51%,
     and their 2nd mode becomes torsion.
@@ -348,6 +360,6 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–7 and the remote viewer are done. Open decision from stage 7: the frequency rule ("no mode in
-67–2940 Hz" chooses no iteration). Next: stage 8 (half-model with symmetry vs full; `casting` filter along the
+Stages 0–7 and the remote viewer are done. The stage 7 frequency rule is now f₁ ≥ 100 Hz (a starting point
+to tune against the flight controller's filter settings). Next: stage 8 (half-model with symmetry vs full; `casting` filter along the
 print Z axis, and the speed of the original morphology/casting filters).
