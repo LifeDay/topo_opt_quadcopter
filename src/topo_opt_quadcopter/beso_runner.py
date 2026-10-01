@@ -91,14 +91,16 @@ def newest_vtk(run_dir: Path, settle_s: float = 2.0) -> Path | None:
 
 def run_beso(run_dir: Path, inp_file: Path, conf_body: str, log_name: str = "beso_stdout.log",
              threads: int = 8, live_stl: Path | None = None, poll_s: float = 2.0,
-             fast_filter: bool = True) -> BesoRun:
+             fast_filter: bool = True, casting_fix: bool = False) -> BesoRun:
     """Copy inp_file into run_dir, write beso_conf.py and run BESO there.
 
     conf_body is the text of beso_conf.py without `path`, `path_calculix` and `file_name`,
     which are filled in here. threads is ccx's thread count (8 = the physical cores).
     live_stl: if set, the newest iteration's solid is exported there while BESO runs
     (needs "vtk" in save_resulting_format and save_iteration_results > 0).
-    fast_filter: replace BESO's "simple" filter with the vectorized one in beso_fast_filter.py.
+    fast_filter: replace BESO's "simple" and "casting" filters with the vectorized ones in
+    beso_fast_filter.py. casting_fix: use the intended neighbour rule in the casting filter,
+    not BESO's (see beso_fast_filter.py); needs fast_filter.
     """
     run_dir = Path(run_dir).resolve()
     if run_dir.exists():
@@ -111,6 +113,8 @@ def run_beso(run_dir: Path, inp_file: Path, conf_body: str, log_name: str = "bes
             source = source.replace(old, new)
         if name == "beso_filters.py" and fast_filter:
             source += "\n\n" + FAST_FILTER.read_text()
+            if casting_fix:
+                source += "\n_CASTING_FIX = True\n"
         (beso_copy / name).write_text(source)
 
     times_log = run_dir / "ccx_times.log"

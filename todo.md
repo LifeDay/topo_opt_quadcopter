@@ -345,9 +345,62 @@ f₁ = (1.875²/2π)·√(EI/ρAL⁴).
     One modal + 3 static steps takes 34 s on the solid block and ~9 s at 30% mass with void removed.
   - Mode labels in `iterations.csv` are `direction:share` — the tip's dominant motion (x, y, z, twist) and the share
     of the modal kinetic energy in the motor mass (ccx mass-normalizes the modes).
-- [ ] **8. Symmetry and printability**: half-model with symmetry boundary conditions vs the
+- [x] **8. Symmetry and printability**: half-model with symmetry boundary conditions vs the
       full model; `casting` filter along the print Z axis (test the direction sign).
       Pass: results match; slices without supports.
+      (`scripts/stage8_symmetry_casting.py` → `runs/stage8/stage8_results.csv`, `stage8_designs.png`)
+  - Done 2026-09-29. Stage 4 block cut at y = 0, y ≥ 0 half meshed (h 2.5: 38k nodes vs 64k full); cut face `SYM`
+    (`mesh_step` BC surfaces can now span several regions). Stage 5 balanced loads, filter 6 mm, mass goal 0.3.
+  - **Symmetric / antisymmetric per step**: Fz gets uy = 0 on the cut; Fy and Mx (they mirror onto their negative)
+    get ux = uz = 0. `*BOUNDARY, OP=NEW` sets it per step, so the stage 5 envelope is exact on the half. Loads on
+    the half are the half face's share of the full coupling's: forces halve; Mx becomes a net Fz = M·Sy/J plus
+    M·(J_half − ȳ·Sy)/J about the half face's centroid (J = polar moment of the full face). Solid block, full-model
+    compliance from the half vs the full model: Fz +0.00%, Fy +0.01%, Mx +0.05%.
+
+    | case    | vs full design | Fz   | Fy   | Mx   | IoU vs full | ccx s/it (full) |
+    |---------|----------------|------|------|------|-------------|-----------------|
+    | sym_fz  | stage 5 fz     | 1.04 | –    | –    | 0.58        | 3.2 (8.2)       |
+    | sym_env | stage 5 env    | 0.95 | 0.98 | 0.97 | 0.74        | 7.9 (22.2)      |
+
+    Compliance ÷ full design's. IoU of 0.6–0.7 is the stage 4 local-optimum scatter (different mesh), not a symmetry
+    error; the half designs are exactly symmetric, the full ones aren't (mirror IoU 0.90 and 0.68).
+    **ccx is 2.6–2.8× faster per iteration.** A quarter model (a second plane) would work the same way, but every load
+    must be split into its symmetric/antisymmetric parts for each plane.
+  - **Casting sign: the vector is the build direction.** Each element takes the highest sensitivity above it
+    (higher along the vector), so solid fills columns from the low end: `(0, 0, 1)` prints on a plate at −z.
+    `cast_pz` and `cast_nz` are mirror images.
+  - **BESO's casting filter has a bug**: in the neighbouring sectors (squares of side = tolerance) the height test is
+    reversed, so an element only sees the adjacent sectors when it is above all of them, and then takes the lower
+    elements as "above"; ~60% of the intended pairs are missing. **And it was slow**: 66 s per iteration at 20k
+    elements (the solve is 3.2 s). `beso_fast_filter.py` now also replaces `prepare2s_casting`/`run2_casting`
+    (sparse matrices): same pairs and results to 1e-15, **0.04 s per iteration**, and the reruns give identical
+    designs (0 elements differ from the original runs, kept in `runs/stage8/cast_*_orig`).
+    `run_beso(casting_fix=True)` uses the intended rule (above = within the tolerance across, strictly higher).
+  - BESO's casting frame is `ex = (−v_z, 0, v_x)`, zero for a vector along ±y → **casting along y divides by zero**.
+
+    | case           | casting               | Fz / solid | unsupported +z | −z   |
+    |----------------|-----------------------|------------|----------------|------|
+    | sym_fz         | none                  | 2.77       | 1354           | 1298 |
+    | cast_pz        | +z, BESO's, tol 6     | 3.46       | 124            | 354  |
+    | cast_nz        | −z, BESO's, tol 6     | 3.48       | 296            | 126  |
+    | cast_pz_fix    | +z, fixed, tol 6      | 9.56       | 192            | 754  |
+    | cast_pz_fix_t3 | +z, fixed, tol 3      | 3.24       | 116            | 356  |
+
+    Unsupported = 1 mm voxels with nothing below them within 45°, above the solid block's 40 (the hole roof).
+  - **The casting tolerance must be about one element, not the filter radius.** With the fixed rule at 6 mm, a tall
+    column keeps everything within 6 mm of it solid, so thin walls can't stand next to a void; the result is a wedge
+    3.5× less stiff. At 3 mm it becomes a channel (two side walls tapering towards the tip, plus a floor), 17% less
+    stiff than the unconstrained truss. BESO's buggy filter mostly acts within sectors, which by chance allowed walls
+    along the domain faces (3.46). → Use `casting_fix=True` with a tolerance of ~1 element.
+  - Casting is stricter than printing needs (no overhang at all, where 45° prints fine). An overhang filter (e.g.
+    Langelaar's AM filter) would give more freedom; BESO has none. Not needed yet.
+  - **The overhang count is only relative**: jagged tet surfaces and walls one element thick count as overhangs even
+    on extrusions (the stage 4 truss is an extrusion along y, yet showed 1118 raw). The voxels are closed and opened
+    by one voxel first; a slicer-style facet count on a Taubin-smoothed surface was worse (smoothing rounds the edges
+    on the plate into overhangs). Not worth building further: slicer supports handle overhangs well enough,
+    so an overhang check is optional, not a pass criterion.
+  - The cast designs are walls one element (2.5 mm) thick, near the resolution limit; the final run should use a
+    finer mesh.
 - [ ] **9. Printable solid + re-check**: solid elements → surface → smoothing → union with
       keep-in parts → watertight STL → re-mesh → CalculiX. Pass: stiffness, failure index
       and f₁ within 10–15% of BESO's last iteration.
@@ -360,6 +413,7 @@ more than about 20% of the stiffness.
 
 ## Next step
 
-Stages 0–7 and the remote viewer are done. The stage 7 frequency rule is now f₁ ≥ 100 Hz (a starting point
-to tune against the flight controller's filter settings). Next: stage 8 (half-model with symmetry vs full; `casting` filter along the
-print Z axis, and the speed of the original morphology/casting filters).
+Stages 0–8 and the remote viewer are done. The stage 7 frequency rule is f₁ ≥ 100 Hz (a starting point
+to tune against the flight controller's filter settings). Next: stage 9 (surface extraction, smoothing, union with
+keep-in parts, re-mesh and re-check), starting from `cast_pz_fix_t3` and `sym_fz`. Still open from stage 4: the
+speed of BESO's morphology filters (not used so far).

@@ -3,7 +3,8 @@
 The solids are fragmented so that regions share nodes on their interfaces. Where solids
 overlap, the region with the highest priority (geometry.REGION_PRIORITY) owns the volume.
 Boundary-condition surfaces are chosen as the boundary faces of a named region that lie
-inside a box, e.g. the root end face of the fixed pad.
+inside a box, e.g. the root end face of the fixed pad. A surface can span several regions
+(e.g. a symmetry plane cutting all of them).
 """
 
 from dataclasses import dataclass, field
@@ -103,10 +104,11 @@ class FEMesh:
                                 np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))) / 6
 
 
-def mesh_step(step_path: Path, bc_surfaces: dict[str, tuple[str, BoxSelect]], size: float,
+def mesh_step(step_path: Path, bc_surfaces: dict[str, tuple[str | tuple[str, ...], BoxSelect]], size: float,
               elem_type: str = "C3D10", size_min: float | None = None,
               save_msh: Path | None = None) -> FEMesh:
-    """Mesh step_path. bc_surfaces maps a set name to (region name, box selecting its faces)."""
+    """Mesh step_path. bc_surfaces maps a set name to (region name or names, box selecting
+    their boundary faces)."""
     gmsh_type, order = GMSH_TYPES[elem_type]
     gmsh.initialize()
     try:
@@ -139,7 +141,8 @@ def mesh_step(step_path: Path, bc_surfaces: dict[str, tuple[str, BoxSelect]], si
 
         surface_tags = {}
         for set_name, (region, box) in bc_surfaces.items():
-            boundary = gmsh.model.getBoundary([(3, t) for t in regions[region]], combined=False,
+            names = (region,) if isinstance(region, str) else region
+            boundary = gmsh.model.getBoundary([(3, t) for n in names for t in regions[n]], combined=False,
                                               oriented=False)
             tags = sorted({t for _, t in boundary if box.contains(gmsh.model.getBoundingBox(2, t))})
             if not tags:
